@@ -13,6 +13,54 @@
   --success: #10b981;
 }
 
+body.light-mode {
+  --bg-color: #f8fafc;
+  --panel-bg: rgba(255, 255, 255, 0.7);
+  --panel-border: rgba(0, 0, 0, 0.1);
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --message-received: #ffffff;
+}
+
+body.light-mode .login-screen h1 {
+  background: linear-gradient(135deg, #1e293b, #6366f1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+body.light-mode input {
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--text-primary);
+}
+
+body.light-mode .chat-area {
+  background: rgba(248, 250, 252, 0.4);
+}
+
+body.light-mode .chat-header {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+body.light-mode .input-area {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+body.light-mode .input-container {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+body.light-mode .sidebar {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+body.light-mode .user-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+body.light-mode .received .message-bubble {
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -421,6 +469,27 @@ button:active {
 
 .action-icon:hover {
   color: #ef4444;
+}
+
+.action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  padding: 8px;
+  cursor: pointer;
+  border-radius: 50%;
+  transition: background 0.2s, color 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.action-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+body.light-mode .action-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
 }
 
 /* Delete Modal/Options */

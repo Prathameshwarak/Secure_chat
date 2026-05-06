@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Lock, Send, User, MessageSquare, ShieldCheck, Check, CheckCheck, Trash2, Ban, ArrowLeft } from 'lucide-react';
+import { Lock, Send, User, MessageSquare, ShieldCheck, Check, CheckCheck, Trash2, Ban, ArrowLeft, LogOut, Sun, Moon } from 'lucide-react';
 import { generateKeyPair, encryptMessage, decryptMessage } from './encryption';
 import { encodeBase64 } from 'tweetnacl-util';
 import nacl from 'tweetnacl';
 import { auth, googleProvider } from './firebase';
-import { signInWithPopup } from 'firebase/auth';
+import { signInWithPopup, signOut } from 'firebase/auth';
 import './index.css';
 
 interface UserData {
@@ -40,7 +40,16 @@ function App() {
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [activeDeleteMenu, setActiveDeleteMenu] = useState<string | null>(null);
   
+  const [isLightMode, setIsLightMode] = useState(() => {
+    return localStorage.getItem('e2ee_theme') === 'light';
+  });
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    document.body.classList.toggle('light-mode', isLightMode);
+    localStorage.setItem('e2ee_theme', isLightMode ? 'light' : 'dark');
+  }, [isLightMode]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -103,6 +112,22 @@ function App() {
       console.error("Google login failed", error);
       alert("Google login failed. Please try again or use the standard username login.");
     }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.error(e);
+    }
+    if (socket) {
+      socket.disconnect();
+      setSocket(null);
+    }
+    setIsJoined(false);
+    setUsername('');
+    setSelectedUsername(null);
+    setMessages({});
   };
 
   const usersRef = useRef<UserData[]>(users);
@@ -432,11 +457,31 @@ function App() {
     <div className="app-container glass-panel">
       {/* Sidebar */}
       <div className={`sidebar ${selectedUsername ? 'hide-on-mobile' : ''}`}>
-        <div className="sidebar-header">
-          <h2><User size={20} /> {username}</h2>
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-            <Lock size={12} style={{ display: 'inline', verticalAlign: 'text-bottom', marginRight: '2px' }} /> E2EE Active
-          </p>
+        <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h2><User size={20} /> {username}</h2>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+              <Lock size={12} style={{ display: 'inline', verticalAlign: 'text-bottom', marginRight: '2px' }} /> E2EE Active
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <button 
+              className="action-btn" 
+              style={{ display: 'flex', padding: '6px' }}
+              onClick={() => setIsLightMode(!isLightMode)}
+              title="Toggle Theme"
+            >
+              {isLightMode ? <Moon size={18} /> : <Sun size={18} />}
+            </button>
+            <button 
+              className="action-btn" 
+              style={{ display: 'flex', padding: '6px', color: '#ef4444' }}
+              onClick={handleLogout}
+              title="Logout"
+            >
+              <LogOut size={18} />
+            </button>
+          </div>
         </div>
         <div className="users-list">
           {allUsernames.length === 0 ? (
