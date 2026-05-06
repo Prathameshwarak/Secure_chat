@@ -87,13 +87,14 @@ io.on('connection', (socket) => {
           nonce,
           timestamp: Date.now()
         });
-        await msg.save();
+        // Save to database in the background so it doesn't delay real-time delivery
+        msg.save().catch(err => console.error('Error saving message:', err));
       } catch (err) {
-        console.error('Error saving message:', err);
+        console.error('Error constructing message:', err);
       }
     }
 
-    // Send to the specific socket
+    // Send to the specific socket immediately
     socket.to(to).emit('private-message', {
       from: socket.id,
       fromUsername,
@@ -106,9 +107,8 @@ io.on('connection', (socket) => {
 
   // Relay message delivered acknowledgment
   socket.on('message-delivered', async ({ to, messageId }) => {
-    try {
-      await Message.updateOne({ messageId }, { status: 'delivered' });
-    } catch (err) { console.error(err); }
+    // Update DB in background
+    Message.updateOne({ messageId }, { status: 'delivered' }).catch(err => console.error(err));
 
     socket.to(to).emit('message-delivered', {
       from: socket.id,
@@ -118,9 +118,8 @@ io.on('connection', (socket) => {
 
   // Relay message read acknowledgment
   socket.on('message-read', async ({ to, messageId }) => {
-    try {
-      await Message.updateOne({ messageId }, { status: 'read' });
-    } catch (err) { console.error(err); }
+    // Update DB in background
+    Message.updateOne({ messageId }, { status: 'read' }).catch(err => console.error(err));
 
     socket.to(to).emit('message-read', {
       from: socket.id,
@@ -130,9 +129,8 @@ io.on('connection', (socket) => {
 
   // Relay message delete for everyone
   socket.on('message-delete-everyone', async ({ to, messageId }) => {
-    try {
-      await Message.updateOne({ messageId }, { isDeleted: true });
-    } catch (err) { console.error(err); }
+    // Update DB in background
+    Message.updateOne({ messageId }, { isDeleted: true }).catch(err => console.error(err));
 
     if (to) {
       socket.to(to).emit('message-delete-everyone', {
