@@ -4,6 +4,8 @@ import { Lock, Send, User, MessageSquare, ShieldCheck, Check, CheckCheck, Trash2
 import { generateKeyPair, encryptMessage, decryptMessage } from './encryption';
 import { encodeBase64 } from 'tweetnacl-util';
 import nacl from 'tweetnacl';
+import { auth, googleProvider } from './firebase';
+import { signInWithPopup } from 'firebase/auth';
 import './index.css';
 
 interface UserData {
@@ -44,10 +46,7 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, selectedUsername]);
 
-  const handleJoin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!username.trim()) return;
-
+  const executeJoin = (joinUsername: string) => {
     // Retrieve or Generate E2EE keys on login
     let keys = keyPair;
     if (!keys) {
@@ -68,7 +67,7 @@ function App() {
 
     newSocket.on('connect', () => {
       newSocket.emit('join', {
-        username,
+        username: joinUsername,
         publicKey: encodeBase64(keys.publicKey),
       });
       setIsJoined(true);
@@ -77,6 +76,33 @@ function App() {
     newSocket.on('users-update', (updatedUsers: UserData[]) => {
       setUsers(updatedUsers);
     });
+  };
+
+  const handleJoin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim()) return;
+    executeJoin(username);
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const user = result.user;
+      
+      let displayName = user.displayName;
+      if (!displayName && user.email) {
+        displayName = user.email.split('@')[0];
+      }
+      if (!displayName) {
+        displayName = "User_" + Math.random().toString(36).substring(2, 6);
+      }
+      
+      setUsername(displayName);
+      executeJoin(displayName);
+    } catch (error) {
+      console.error("Google login failed", error);
+      alert("Google login failed. Please try again or use the standard username login.");
+    }
   };
 
   const usersRef = useRef<UserData[]>(users);
@@ -348,6 +374,37 @@ function App() {
               Join Chat
             </button>
           </form>
+
+          <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0', color: 'var(--text-secondary)' }}>
+            <div style={{ flex: 1, height: '1px', backgroundColor: 'rgba(255,255,255,0.1)' }}></div>
+            <span style={{ padding: '0 10px', fontSize: '0.9rem' }}>OR</span>
+            <div style={{ flex: 1, height: '1px', backgroundColor: 'rgba(255,255,255,0.1)' }}></div>
+          </div>
+
+          <button 
+            type="button"
+            onClick={handleGoogleLogin} 
+            style={{ 
+              width: '100%', 
+              backgroundColor: '#fff', 
+              color: '#333', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              gap: '10px',
+              fontWeight: 600,
+              border: 'none',
+              padding: '12px',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              transition: 'background-color 0.2s'
+            }}
+            onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#f1f1f1'}
+            onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#fff'}
+          >
+            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" style={{ width: '18px' }} />
+            Sign in with Google
+          </button>
         </div>
       </div>
     );
