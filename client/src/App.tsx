@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { Lock, Send, User, MessageSquare, ShieldCheck, Check, CheckCheck, Trash2, Ban, ArrowLeft } from 'lucide-react';
 import { generateKeyPair, encryptMessage, decryptMessage } from './encryption';
 import { encodeBase64 } from 'tweetnacl-util';
+import nacl from 'tweetnacl';
 import './index.css';
 
 interface UserData {
@@ -30,7 +31,7 @@ function App() {
   const [keyPair, setKeyPair] = useState<nacl.BoxKeyPair | null>(null);
   
   const [users, setUsers] = useState<UserData[]>([]);
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [selectedUsername, setSelectedUsername] = useState<string | null>(null);
   
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [inputText, setInputText] = useState('');
@@ -39,18 +40,28 @@ function App() {
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom of chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, selectedUserId]);
+  }, [messages, selectedUsername]);
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim()) return;
 
-    // Generate E2EE keys on login
-    const keys = generateKeyPair();
-    setKeyPair(keys);
+    // Retrieve or Generate E2EE keys on login
+    let keys = keyPair;
+    if (!keys) {
+      const storedSecret = localStorage.getItem('e2ee_secretKey');
+      if (storedSecret) {
+        const secretKey = new Uint8Array(Object.values(JSON.parse(storedSecret)));
+        keys = nacl.box.keyPair.fromSecretKey(secretKey);
+        setKeyPair(keys);
+      } else {
+        keys = generateKeyPair();
+        localStorage.setItem('e2ee_secretKey', JSON.stringify(keys.secretKey));
+        setKeyPair(keys);
+      }
+    }
 
     const newSocket = io(SERVER_URL);
     setSocket(newSocket);
@@ -71,32 +82,58 @@ function App() {
   const usersRef = useRef<UserData[]>(users);
   usersRef.current = users;
   
-  const selectedUserIdRef = useRef<string | null>(selectedUserId);
-  selectedUserIdRef.current = selectedUserId;
+  const selectedUsernameRef = useRef<string | null>(selectedUsername);
+  selectedUsernameRef.current = selectedUsername;
 
   useEffect(() => {
     if (!socket || !keyPair) return;
+
+    socket.on('chat-history', (historyMsgs: any[]) => {
+      const grouped: Record<string, Message[]> = {};
+      
+      historyMsgs.forEach((msg) => {
+        try {
+          const isMine = msg.senderUsername === username;
+          const otherUsername = isMine ? msg.receiverUsername : msg.senderUsername;
+          const otherPublicKey = isMine ? msg.receiverPublicKey : msg.senderPublicKey;
+          
+          let decryptedText = "";
+          if (msg.isDeleted) {
+             decryptedText = msg.deletedText || 'This message was deleted';
+          } else {
+             decryptedText = decryptMessage(msg.ciphertext, msg.nonce, otherPublicKey, keyPair.secretKey) || 'Error decrypting message';
+          }
+
+          if (!grouped[otherUsername]) grouped[otherUsername] = [];
+          grouped[otherUsername].push({
+            id: msg.messageId,
+            text: decryptedText,
+            isMine,
+            timestamp: msg.timestamp,
+            status: msg.status,
+            isDeleted: msg.isDeleted
+          });
+        } catch(e) { console.error("Could not decrypt historic message", e) }
+      });
+      
+      setMessages(grouped);
+    });
 
     const handlePrivateMessage = ({ from, fromUsername, ciphertext, nonce, timestamp, messageId }: any) => {
       const currentUsers = usersRef.current;
       const sender = currentUsers.find((u) => u.socketId === from);
       
       if (sender) {
-        const decryptedText = decryptMessage(
-          ciphertext,
-          nonce,
-          sender.publicKey,
-          keyPair.secretKey
-        );
+        const decryptedText = decryptMessage(ciphertext, nonce, sender.publicKey, keyPair.secretKey);
 
         if (decryptedText) {
-          const isSelected = selectedUserIdRef.current === from;
+          const isSelected = selectedUsernameRef.current === fromUsername;
           
           setMessages((prev) => {
-            const userMessages = prev[from] || [];
+            const userMessages = prev[fromUsername] || [];
             return {
               ...prev,
-              [from]: [
+              [fromUsername]: [
                 ...userMessages,
                 { id: messageId || Math.random().toString(), text: decryptedText, isMine: false, timestamp, status: 'received' },
               ],
@@ -106,48 +143,53 @@ function App() {
           if (!isSelected) {
             setUnreadCounts((prev) => ({
               ...prev,
-              [from]: (prev[from] || 0) + 1,
+              [fromUsername]: (prev[fromUsername] || 0) + 1,
             }));
             socket.emit('message-delivered', { to: from, messageId });
           } else {
             socket.emit('message-read', { to: from, messageId });
           }
-        } else {
-          console.error('Failed to decrypt message from', fromUsername);
         }
       }
     };
 
     const handleMessageDelivered = ({ from, messageId }: any) => {
+      const senderName = usersRef.current.find(u => u.socketId === from)?.username;
+      if (!senderName) return;
       setMessages((prev) => {
-        const userMsgs = prev[from];
+        const userMsgs = prev[senderName];
         if (!userMsgs) return prev;
         return {
           ...prev,
-          [from]: userMsgs.map(m => (m.id === messageId && m.status !== 'read') ? { ...m, status: 'delivered' } : m)
+          [senderName]: userMsgs.map(m => (m.id === messageId && m.status !== 'read') ? { ...m, status: 'delivered' } : m)
         };
       });
     };
 
     const handleMessageRead = ({ from, messageId }: any) => {
+      const senderName = usersRef.current.find(u => u.socketId === from)?.username;
+      if (!senderName) return;
       setMessages((prev) => {
-        const userMsgs = prev[from];
+        const userMsgs = prev[senderName];
         if (!userMsgs) return prev;
         return {
           ...prev,
-          [from]: userMsgs.map(m => m.id === messageId ? { ...m, status: 'read' } : m)
+          [senderName]: userMsgs.map(m => m.id === messageId ? { ...m, status: 'read' } : m)
         };
       });
     };
 
     const handleDeleteEveryone = ({ from, messageId }: any) => {
+      // the message could be from anyone, but it affects the chat with the sender.
+      const senderName = usersRef.current.find(u => u.socketId === from)?.username;
+      if (!senderName) return;
+
       setMessages((prev) => {
-        const userMsgs = prev[from];
+        const userMsgs = prev[senderName];
         if (!userMsgs) return prev;
-        const senderName = usersRef.current.find(u => u.socketId === from)?.username || 'user';
         return {
           ...prev,
-          [from]: userMsgs.map(m => m.id === messageId ? { ...m, isDeleted: true, text: `This message was deleted by ${senderName}` } : m)
+          [senderName]: userMsgs.map(m => m.id === messageId ? { ...m, isDeleted: true, text: `This message was deleted by ${senderName}` } : m)
         };
       });
     };
@@ -158,19 +200,23 @@ function App() {
     socket.on('message-delete-everyone', handleDeleteEveryone);
 
     return () => {
+      socket.off('chat-history');
       socket.off('private-message', handlePrivateMessage);
       socket.off('message-delivered', handleMessageDelivered);
       socket.off('message-read', handleMessageRead);
       socket.off('message-delete-everyone', handleDeleteEveryone);
     };
-  }, [socket, keyPair]);
+  }, [socket, keyPair, username]);
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || !selectedUserId || !socket || !keyPair) return;
+    if (!inputText.trim() || !selectedUsername || !socket || !keyPair) return;
 
-    const recipient = users.find((u) => u.socketId === selectedUserId);
-    if (!recipient) return;
+    const recipient = users.find((u) => u.username === selectedUsername);
+    if (!recipient) {
+      alert('User is currently offline. You cannot send them new messages until they reconnect.');
+      return;
+    }
 
     try {
       const { ciphertext, nonce } = encryptMessage(
@@ -183,7 +229,7 @@ function App() {
       const messageId = Math.random().toString(36).substr(2, 9);
 
       socket.emit('private-message', {
-        to: selectedUserId,
+        to: recipient.socketId,
         fromUsername: username,
         ciphertext,
         nonce,
@@ -192,10 +238,10 @@ function App() {
 
       // Optimistically add the plaintext to our local state
       setMessages((prev) => {
-        const userMessages = prev[selectedUserId] || [];
+        const userMessages = prev[selectedUsername] || [];
         return {
           ...prev,
-          [selectedUserId]: [
+          [selectedUsername]: [
             ...userMessages,
             { id: messageId, text: inputText, isMine: true, timestamp, status: 'sent' },
           ],
@@ -209,44 +255,49 @@ function App() {
     }
   };
 
-  const handleUserSelect = (userId: string) => {
-    setSelectedUserId(userId);
-    setUnreadCounts((prev) => ({ ...prev, [userId]: 0 }));
+  const handleUserSelect = (targetUsername: string) => {
+    setSelectedUsername(targetUsername);
+    setUnreadCounts((prev) => ({ ...prev, [targetUsername]: 0 }));
     setActiveDeleteMenu(null);
     
-    // Emit read receipts for any 'received' messages
+    // Find active socket for the user
+    const targetUser = users.find(u => u.username === targetUsername);
+    
+    // Emit read receipts for any 'received' messages if they are online
     setMessages(prev => {
-      const uMsgs = prev[userId];
+      const uMsgs = prev[targetUsername];
       if (!uMsgs) return prev;
       let changed = false;
       const newMsgs = uMsgs.map(m => {
         if (!m.isMine && m.status === 'received' && !m.isDeleted) {
-          socket?.emit('message-read', { to: userId, messageId: m.id });
+          if (targetUser && socket) {
+            socket.emit('message-read', { to: targetUser.socketId, messageId: m.id });
+          }
           changed = true;
           return { ...m, status: 'read' as const };
         }
         return m;
       });
-      return changed ? { ...prev, [userId]: newMsgs } : prev;
+      return changed ? { ...prev, [targetUsername]: newMsgs } : prev;
     });
   };
 
   const deleteForMe = (messageId: string) => {
-    if (!selectedUserId) return;
+    if (!selectedUsername) return;
     setMessages(prev => {
-      const msgs = prev[selectedUserId] || [];
+      const msgs = prev[selectedUsername] || [];
       return {
         ...prev,
-        [selectedUserId]: msgs.filter(m => m.id !== messageId)
+        [selectedUsername]: msgs.filter(m => m.id !== messageId)
       };
     });
     setActiveDeleteMenu(null);
   };
 
   const deleteForEveryone = (messageId: string) => {
-    if (!selectedUserId || !socket) return;
+    if (!selectedUsername || !socket) return;
     
-    const msg = messages[selectedUserId]?.find(m => m.id === messageId);
+    const msg = messages[selectedUsername]?.find(m => m.id === messageId);
     if (!msg || !msg.isMine) return;
     
     const timeSinceSent = Date.now() - msg.timestamp;
@@ -260,15 +311,16 @@ function App() {
     
     // Update locally
     setMessages(prev => {
-      const msgs = prev[selectedUserId] || [];
+      const msgs = prev[selectedUsername] || [];
       return {
         ...prev,
-        [selectedUserId]: msgs.map(m => m.id === messageId ? { ...m, isDeleted: true, text: 'You deleted this message' } : m)
+        [selectedUsername]: msgs.map(m => m.id === messageId ? { ...m, isDeleted: true, text: 'You deleted this message' } : m)
       };
     });
     
     // Emit to server
-    socket.emit('message-delete-everyone', { to: selectedUserId, messageId });
+    const targetUser = users.find(u => u.username === selectedUsername);
+    socket.emit('message-delete-everyone', { to: targetUser?.socketId, messageId });
     setActiveDeleteMenu(null);
   };
 
@@ -301,23 +353,28 @@ function App() {
     );
   }
 
-  const selectedUser = users.find((u) => u.socketId === selectedUserId);
-  const activeMessages = selectedUserId ? messages[selectedUserId] || [] : [];
-  
-  const getLastMessageTime = (userId: string) => {
-    const userMessages = messages[userId] || [];
+  // Combine online users and users we have history with
+  const historyUsernames = Object.keys(messages);
+  const allUsernames = Array.from(new Set([
+    ...users.filter(u => u.username !== username).map(u => u.username),
+    ...historyUsernames
+  ]));
+
+  const getLastMessageTime = (uname: string) => {
+    const userMessages = messages[uname] || [];
     if (userMessages.length === 0) return 0;
     return userMessages[userMessages.length - 1].timestamp;
   };
 
-  const otherUsers = users.filter((u) => u.socketId !== socket?.id).sort((a, b) => {
-    return getLastMessageTime(b.socketId) - getLastMessageTime(a.socketId);
-  });
+  allUsernames.sort((a, b) => getLastMessageTime(b) - getLastMessageTime(a));
+  
+  const activeMessages = selectedUsername ? messages[selectedUsername] || [] : [];
+  const selectedUserOnline = users.find(u => u.username === selectedUsername);
 
   return (
     <div className="app-container glass-panel">
       {/* Sidebar */}
-      <div className={`sidebar ${selectedUser ? 'hide-on-mobile' : ''}`}>
+      <div className={`sidebar ${selectedUsername ? 'hide-on-mobile' : ''}`}>
         <div className="sidebar-header">
           <h2><User size={20} /> {username}</h2>
           <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
@@ -325,45 +382,54 @@ function App() {
           </p>
         </div>
         <div className="users-list">
-          {otherUsers.length === 0 ? (
+          {allUsernames.length === 0 ? (
             <p style={{ padding: '20px', color: 'var(--text-secondary)', textAlign: 'center', fontSize: '0.9rem' }}>
               Waiting for others to join...
             </p>
           ) : (
-            otherUsers.map((u) => (
-              <div
-                key={u.socketId}
-                className={`user-item ${selectedUserId === u.socketId ? 'active' : ''}`}
-                onClick={() => handleUserSelect(u.socketId)}
-              >
-                <div className="avatar">{u.username.charAt(0).toUpperCase()}</div>
-                <div className="user-info" style={{ flex: 1 }}>
-                  <h4>{u.username}</h4>
-                  <p>Online</p>
+            allUsernames.map((uname) => {
+              const isOnline = users.some(u => u.username === uname);
+              return (
+                <div
+                  key={uname}
+                  className={`user-item ${selectedUsername === uname ? 'active' : ''}`}
+                  onClick={() => handleUserSelect(uname)}
+                >
+                  <div className="avatar" style={{ opacity: isOnline ? 1 : 0.5 }}>
+                    {uname.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="user-info" style={{ flex: 1 }}>
+                    <h4>{uname}</h4>
+                    <p style={{ color: isOnline ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+                      {isOnline ? 'Online' : 'Offline'}
+                    </p>
+                  </div>
+                  {unreadCounts[uname] > 0 && (
+                    <div className="unread-badge">{unreadCounts[uname]}</div>
+                  )}
                 </div>
-                {unreadCounts[u.socketId] > 0 && (
-                  <div className="unread-badge">{unreadCounts[u.socketId]}</div>
-                )}
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>
 
       {/* Chat Area */}
-      <div className={`chat-area ${!selectedUser ? 'hide-on-mobile' : ''}`} onClick={() => { if (activeDeleteMenu) setActiveDeleteMenu(null) }}>
-        {selectedUser ? (
+      <div className={`chat-area ${!selectedUsername ? 'hide-on-mobile' : ''}`} onClick={() => { if (activeDeleteMenu) setActiveDeleteMenu(null) }}>
+        {selectedUsername ? (
           <>
             <div className="chat-header">
-              <button className="back-btn" onClick={() => setSelectedUserId(null)}>
+              <button className="back-btn" onClick={() => setSelectedUsername(null)}>
                 <ArrowLeft size={20} />
               </button>
-              <div className="avatar">{selectedUser.username.charAt(0).toUpperCase()}</div>
+              <div className="avatar" style={{ opacity: selectedUserOnline ? 1 : 0.5 }}>
+                {selectedUsername.charAt(0).toUpperCase()}
+              </div>
               <div>
-                <h3 style={{ fontSize: '1.1rem' }}>{selectedUser.username}</h3>
-                <p style={{ fontSize: '0.8rem', color: 'var(--success)' }}>
-                  <span className="status-dot" style={{ display: 'inline-block', marginRight: '6px' }}></span>
-                  Online - Encrypted Session
+                <h3 style={{ fontSize: '1.1rem' }}>{selectedUsername}</h3>
+                <p style={{ fontSize: '0.8rem', color: selectedUserOnline ? 'var(--success)' : 'var(--text-secondary)' }}>
+                  {selectedUserOnline && <span className="status-dot" style={{ display: 'inline-block', marginRight: '6px' }}></span>}
+                  {selectedUserOnline ? 'Online - Encrypted Session' : 'Offline - Encrypted History'}
                 </p>
               </div>
             </div>
@@ -372,7 +438,7 @@ function App() {
               {activeMessages.length === 0 ? (
                 <div className="empty-state">
                   <ShieldCheck size={48} />
-                  <p>Messages with {selectedUser.username} are End-to-End Encrypted.</p>
+                  <p>Messages with {selectedUsername} are End-to-End Encrypted.</p>
                   <p style={{ fontSize: '0.85rem' }}>No one else can read them.</p>
                 </div>
               ) : (
@@ -432,11 +498,13 @@ function App() {
               <form onSubmit={handleSendMessage} className="input-container">
                 <input
                   type="text"
-                  placeholder={`Message ${selectedUser.username}...`}
+                  placeholder={selectedUserOnline ? `Message ${selectedUsername}...` : `${selectedUsername} is offline...`}
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
+                  disabled={!selectedUserOnline}
+                  style={{ opacity: selectedUserOnline ? 1 : 0.7 }}
                 />
-                <button type="submit" disabled={!inputText.trim()}>
+                <button type="submit" disabled={!inputText.trim() || !selectedUserOnline}>
                   <Send size={18} />
                 </button>
               </form>
